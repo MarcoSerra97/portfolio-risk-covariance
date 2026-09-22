@@ -6,3 +6,4 @@ black>=24.4
 pre-commit>=3.7
 ipykernel>=6.29
 jupyter>=1.0
+pandas-stubs>=2.2
