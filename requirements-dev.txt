@@ -7,3 +7,4 @@ pre-commit>=3.7
 ipykernel>=6.29
 jupyter>=1.0
 pandas-stubs>=2.2
+types-pyyaml>=6.0
