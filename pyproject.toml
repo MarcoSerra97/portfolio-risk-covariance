@@ -30,7 +30,7 @@ strict = true
 files = ["src"]
 
 [[tool.mypy.overrides]]
-module = ["yfinance.*", "fredapi.*", "arch.*", "cvxpy.*"]
+module = ["yfinance.*", "fredapi.*", "arch.*", "cvxpy.*", "pandas_market_calendars.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
