@@ -30,6 +30,16 @@ from portfolio_risk.data import universe
 DEFAULT_TRADING_DAYS_PER_YEAR: int = 252
 DEFAULT_ROLLING_CORR_WINDOW: int = 63
 
+# Human-readable display labels for each bucket, used by the correlation-heatmap
+# annotations. Keys match the ``Bucket`` literal values in universe.py.
+BUCKET_DISPLAY_NAMES: dict[str, str] = {
+    "equity": "Equities",
+    "srf_etf": "Sector/Regional/Factor ETFs",
+    "rate_etf": "Rates",
+    "commodity_fx": "Commodities / FX",
+    "vol_spread": "Vol / Spread",
+}
+
 
 def compute_coverage_table(
     prices: pd.DataFrame,
@@ -261,6 +271,40 @@ def bucket_boundary_positions(ordered_tickers: list[str]) -> list[int]:
     return positions
 
 
+def bucket_label_ranges(ordered_tickers: list[str]) -> list[tuple[str, int, int]]:
+    """Contiguous bucket ranges as ``(display_name, start, end_exclusive)`` tuples.
+
+    Complements ``bucket_boundary_positions``: the boundaries tell you where to
+    draw a dividing line; the ranges tell you where each bucket's block sits so
+    you can annotate it. Ranges are half-open ``[start, end)`` — the block width
+    is ``end - start`` and its centre is ``(start + end) / 2``.
+
+    Args:
+        ordered_tickers: Tickers in the display order used by the heatmap.
+
+    Returns:
+        One tuple per contiguous bucket run, in display order. The display name
+        comes from :data:`BUCKET_DISPLAY_NAMES`, falling back to the raw bucket
+        key if the mapping is missing.
+    """
+    if not ordered_tickers:
+        return []
+    meta = universe.metadata_frame()
+    ranges: list[tuple[str, int, int]] = []
+    current_bucket = str(meta.at[ordered_tickers[0], "bucket"])
+    start = 0
+    for i, ticker in enumerate(ordered_tickers[1:], start=1):
+        bucket = str(meta.at[ticker, "bucket"])
+        if bucket != current_bucket:
+            ranges.append((BUCKET_DISPLAY_NAMES.get(current_bucket, current_bucket), start, i))
+            current_bucket = bucket
+            start = i
+    ranges.append(
+        (BUCKET_DISPLAY_NAMES.get(current_bucket, current_bucket), start, len(ordered_tickers))
+    )
+    return ranges
+
+
 def plot_rolling_coverage(coverage: pd.Series, target: int = 75) -> Figure:
     """Line plot of live-instrument count over time."""
     fig, ax = plt.subplots(figsize=(11, 3.5))
@@ -280,9 +324,29 @@ def plot_rolling_coverage(coverage: pd.Series, target: int = 75) -> Figure:
 def plot_correlation_heatmap(
     corr: pd.DataFrame,
     bucket_boundaries: list[int] | None = None,
+    bucket_labels: list[tuple[str, int, int]] | None = None,
     tick_fontsize: int = 6,
+    label_fontsize: int = 11,
 ) -> Figure:
-    """Heatmap of a correlation matrix with optional bucket dividers."""
+    """Heatmap of a correlation matrix with optional bucket dividers and labels.
+
+    Args:
+        corr: Square correlation matrix; row and column order is preserved
+            (use ``compute_full_correlation`` to get the canonical order).
+        bucket_boundaries: Row/column positions at which to draw black
+            dividers between buckets. Typically from
+            ``bucket_boundary_positions``.
+        bucket_labels: Optional list of ``(display_name, start, end_exclusive)``
+            tuples. When provided, each display name is drawn as a text
+            annotation at the centre of the diagonal block it covers, giving
+            the reader an immediate bucket-level orientation. Typically from
+            ``bucket_label_ranges``.
+        tick_fontsize: Font size for the ticker tick labels along the axes.
+        label_fontsize: Font size for the bucket annotations.
+
+    Returns:
+        The Matplotlib ``Figure`` — the caller is responsible for saving.
+    """
     fig, ax = plt.subplots(figsize=(13, 11))
     sns.heatmap(
         corr,
@@ -302,6 +366,27 @@ def plot_correlation_heatmap(
         for boundary in bucket_boundaries:
             ax.axhline(boundary, color="black", linewidth=0.8)
             ax.axvline(boundary, color="black", linewidth=0.8)
+    if bucket_labels:
+        for name, start, end in bucket_labels:
+            centre = (start + end) / 2
+            ax.text(
+                centre,
+                centre,
+                name,
+                ha="center",
+                va="center",
+                fontsize=label_fontsize,
+                fontweight="bold",
+                color="black",
+                alpha=0.85,
+                bbox={
+                    "boxstyle": "round,pad=0.4",
+                    "facecolor": "white",
+                    "edgecolor": "black",
+                    "alpha": 0.75,
+                    "linewidth": 0.5,
+                },
+            )
     ax.set_title("Full-sample correlation matrix (log-returns)")
     fig.tight_layout()
     return fig
@@ -321,9 +406,11 @@ def plot_rolling_correlation(rolling_corr: pd.Series, window: int) -> Figure:
 
 
 __all__ = [
+    "BUCKET_DISPLAY_NAMES",
     "DEFAULT_ROLLING_CORR_WINDOW",
     "DEFAULT_TRADING_DAYS_PER_YEAR",
     "bucket_boundary_positions",
+    "bucket_label_ranges",
     "compute_coverage_table",
     "compute_full_correlation",
     "compute_return_stats",
