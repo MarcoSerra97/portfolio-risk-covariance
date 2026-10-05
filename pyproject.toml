@@ -39,6 +39,7 @@ module = [
     "seaborn.*",
     "statsmodels.*",
     "sklearn.*",
+     "scipy.*",
 ]
 ignore_missing_imports = true
 
