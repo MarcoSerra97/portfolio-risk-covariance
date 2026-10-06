@@ -47,7 +47,7 @@ from portfolio_risk.data.returns import log_returns
 logger = logging.getLogger(__name__)
 
 DEFAULT_START: date = date(2010, 1, 4)
-DEFAULT_END: date = date(2024, 12, 31)
+DEFAULT_END: date = date(2025, 12, 31)
 DEFAULT_BATCH_SIZE: int = 25
 DEFAULT_RETRIES: int = 3
 DEFAULT_RETRY_BACKOFF: float = 1.0

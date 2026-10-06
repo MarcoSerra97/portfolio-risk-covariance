@@ -1,19 +1,19 @@
 # Data Acquisition & Cleaning — Design Document
 
 **Project:** portfolio-risk-covariance
-**Status:** Draft v1
+**Status:** v1.1
 **Author:** Marco Serra
-**Last updated:** 2026-09-22
+**Last updated:** 2026-10-06
 
 ## 1. Purpose and scope
 
-This document specifies the data-acquisition layer for the covariance-benchmark study. It fixes the instrument universe, source, date range, calendar conventions, cleaning rules, and cache layout. Code in `src/portfolio_risk/` treats this specification as authoritative; downstream deviations must be captured as edits to this file before the code is written.
+This document specifies the data-acquisition layer for the covariance-benchmark study. It fixes the instrument universe, source, date range, calendar conventions, cleaning rules, and cache layout. Code in `src/portfolio_risk/` treats this specification as authoritative; downstream deviations must be captured as edits to this file before the code is written. The evaluation layer (backtest calendar, estimation windows, criteria) is specified separately in `02-evaluation-design.md`.
 
 ## 2. Universe
 
 **Total instruments: 75**, split across five buckets. All series are log-returns of daily adjusted close for tradable instruments (unit-homogeneous).
 
-The equities bucket is fixed as of the Jan 2010 S&P 500 constituent list, filtered for continuity through 2025 (no major spinoffs, mergers, or corporate restructurings judged materially disruptive to the adjusted price series). This introduces a soft survivorship bias, addressed in §9.
+The equities bucket is fixed as of the Jan 2010 S&P 500 constituent list, filtered for continuity through 2025 (no major spinoffs, mergers, or corporate restructurings judged materially disruptive to the adjusted price series). This introduces a soft survivorship bias, addressed in §8.
 
 ### 2.1 US large-cap equities (38)
 
@@ -101,7 +101,7 @@ Balanced across five sectors.
 
 **Factor (3):** MTUM (US momentum, Apr 2013), IWD (Russell 1000 Value, 2000), IWF (Russell 1000 Growth, 2000).
 
-MTUM's launch (2013-04-16) means it is absent from the burn-in period. Flagged in the coverage table; not dropped — handled at the estimation window level per §5.3.
+MTUM's first observation in the fetched data is 2013-04-18, so it is absent from most of the burn-in period. Flagged in the coverage table; not dropped — handled at the estimation-window level per §5.3.
 
 ### 2.3 Rate ETFs (8)
 
@@ -133,16 +133,16 @@ MTUM's launch (2013-04-16) means it is absent from the burn-in period. Flagged i
 
 The original spec called this bucket "vol / spread proxies as log-returns of tradable instruments" — a constraint that rules out ^VIX (level series, not tradable) and makes classical VIX-futures ETFs (VXX) problematic due to reverse-split discontinuities and a v1→v2 relaunch in Jan 2019. The composition below substitutes one clean vol-futures proxy plus five instruments that add non-redundant credit and low-vol equity exposures. The bucket label has been widened accordingly.
 
-| Ticker | Name | Exposure | Inception |
-|--------|------|----------|-----------|
-| VIXY | ProShares VIX Short-Term Futures | Vol futures | Jan 2011 |
-| SPLV | Invesco S&P 500 Low Volatility | Low-vol equity | May 2011 |
-| BKLN | Invesco Senior Loan | Floating-rate bank loans | Mar 2011 |
-| CWB | SPDR Bloomberg Convertible Securities | Convertibles | Apr 2009 |
-| PFF | iShares Preferred Stock | Subordinated credit / preferreds | Mar 2007 |
-| BIL | SPDR Bloomberg 1-3M T-Bill | Cash proxy | May 2007 |
+| Ticker | Name | Exposure | First observation |
+|--------|------|----------|-------------------|
+| VIXY | ProShares VIX Short-Term Futures | Vol futures | 2011-01-04 |
+| SPLV | Invesco S&P 500 Low Volatility | Low-vol equity | 2011-05-05 |
+| BKLN | Invesco Senior Loan | Floating-rate bank loans | 2011-03-03 |
+| CWB | SPDR Bloomberg Convertible Securities | Convertibles | full window (launched Apr 2009) |
+| PFF | iShares Preferred Stock | Subordinated credit / preferreds | full window (launched Mar 2007) |
+| BIL | SPDR Bloomberg 1-3M T-Bill | Cash proxy | full window (launched May 2007) |
 
-VIXY, SPLV, and BKLN launch in 2011 — treated like MTUM (present from start date, missing in burn-in) per §5.3.
+VIXY, SPLV, and BKLN launch in 2011 — treated like MTUM (missing in part of the burn-in) per §5.3. BIL is excluded from the optimised portfolios in the evaluation (see `02-evaluation-design.md`); it remains in the universe and in the risk-forecast tests.
 
 ## 3. Source
 
@@ -154,8 +154,9 @@ No proprietary vendor data. No manual price overrides.
 
 ## 4. Date range and calendar
 
-- **Study window:** 2010-01-04 to 2024-12-31 (approximately 3,776 NYSE trading days).
-- **Backtest window:** 2015-01-02 onward; 2010-2014 serves as burn-in for rolling estimators (window sizes up to 252 or 504 days depending on estimator).
+- **Study window:** 2010-01-04 to 2025-12-31 (4,024 NYSE trading days).
+- **Burn-in:** 2010–2014, providing history for the first estimation windows.
+- **Backtest:** 131 non-overlapping 21-day holding periods from 2015-01-02 to 2025-12-09; the final 15 trading days of 2025 do not form a full period and are dropped. Rebalance dates, estimation windows and regimes are specified in `02-evaluation-design.md`.
 - **Reference calendar:** NYSE trading days via `pandas_market_calendars`. Half-days included.
 - **Non-NYSE instruments** (FX, some commodities): reindex to the NYSE calendar. Gaps handled per §5.1.
 
@@ -167,7 +168,9 @@ Evaluated per instrument, per date, against the NYSE calendar:
 
 - **Isolated 1-day gap** (missing on day t, present on t-1 and t+1): forward-fill from t-1. Produces a zero log-return on t and the true return on t+1 computed against the ffill'd price — no artificial jump.
 - **Multi-day gap** (≥2 consecutive missing days on valid trading days): flag date universe-wide, drop from the return panel. Logged to `data/processed/dropped_dates.csv`.
-- **Pre-inception missing:** NaN in the panel; downstream estimators must be robust to per-column NaN.
+- **Pre-inception missing:** NaN in the panel.
+
+**Result on the fetched data:** 0 dates dropped; the cleaned panel has all 4,024 trading days.
 
 ### 5.2 Return conventions
 
@@ -177,58 +180,57 @@ Evaluated per instrument, per date, against the NYSE calendar:
 
 ### 5.3 Post-2010 inception instruments
 
-MTUM, VIXY, SPLV, BKLN, and CWB launch after 2010-01-04. Their columns contain NaN before inception. Estimation windows exclude an instrument when the window overlaps inception by less than a minimum observation threshold (working default: 60 obs — see §8).
+MTUM, VIXY, SPLV, and BKLN start after 2010-01-04; their columns contain NaN before their first observation. (CWB, listed here in v1, has data for the full window and is not affected.)
+
+Estimators require a complete panel, so an instrument enters an estimation window only if it has data on every day of that window. Within a given evaluation run, all estimators use the same asset set at each rebalance date. In practice: with 252-day windows all 75 instruments are eligible throughout the backtest; with 504-day windows MTUM enters at the rebalance of 2015-05-04. Details in `02-evaluation-design.md` §4. (This replaces the v1 working rule of a 60-observation minimum.)
 
 ### 5.4 Outlier flagging
 
-- **Rule:** flag any observation with `|z_t| > 8`, where `z_t` is computed against a rolling median-and-MAD on a 63-day window (~3 months), centred where possible, right-anchored at series edges.
-- **Action:** flag only, do not remove. Logged to `data/processed/anomalies.csv` with ticker, date, raw return, z-score.
+- **Rule:** flag any observation with `|z_t| > 8`, where `z_t = (r_t − median) / (1.4826 × MAD)` is computed on a right-anchored rolling 63-day window (~3 months) that includes day t. The first 62 days of each series cannot be flagged.
+- **Action:** flag only, do not remove. Logged to `data/processed/anomalies.csv` with ticker, date, return, rolling median, MAD and z-score.
 - **Rationale:** the estimator comparison should see the same data any user would; robust estimators (nonlinear shrinkage) are expected to handle outliers better than naive sample covariance, and removing them would prejudge the comparison.
+
+**Result on the fetched data (2010–2025): 1,118 flags.**
+
+- **601 are artefacts of the rule on BIL.** BIL's price moves in one-cent steps (≈0.02%) and is unchanged on most days, particularly in 2010–2015, so in many 63-day windows more than half of its returns are exactly zero. The MAD is then zero and any one-cent move gets an infinite z-score. The underlying prices are correct; the rule is undefined for such windows. The flags are not used by any downstream computation, so the rule is left unchanged; reports of the anomaly count exclude rows with MAD = 0 and state why.
+- **517 are genuine**, about 7 per instrument over 16 years, consistent with fat-tailed daily returns. They coincide with known events: the May 2010 flash crash, the August 2011 US downgrade, August 2015, December 2018, March 2020, August 2024, April 2025.
+- **Distribution adjustments checked on BKLN and PFF** (the monthly-paying funds most exposed to adjustment errors): their flags cluster in crisis periods and are spread evenly across days of the month, with no concentration around ex-distribution dates.
 
 ## 6. Cache layout
 
 ```
 data/
 ├── raw/
-│   ├── prices.parquet         ← 75-column panel, DatetimeIndex, adjusted close
-│   └── prices_meta.parquet    ← per-instrument metadata: name, sector, bucket, inception
+│   └── prices.parquet         ← 75-column panel, DatetimeIndex, adjusted close as fetched
 ├── processed/
+│   ├── prices.parquet         ← cleaned panel aligned to the NYSE calendar
 │   ├── returns.parquet        ← 75-column panel of log-returns
 │   ├── anomalies.csv          ← outlier flag log
 │   └── dropped_dates.csv      ← universe-wide dropped dates
-└── manifest.yaml              ← universe version, date range, integrity hashes (tracked)
+└── manifest.yaml              ← universe version, date range, SHA-256 hashes (tracked)
 ```
 
-`data/raw/` and `data/processed/` are git-ignored; `data/manifest.yaml` is tracked and serves as the reproducibility manifest.
+`data/raw/` and `data/processed/` are git-ignored; `data/manifest.yaml` is tracked and serves as the reproducibility manifest. Instrument metadata (name, bucket, subgroup, inception) lives in `src/portfolio_risk/data/universe.py`, not in a separate metadata file as planned in v1.
 
-**Incremental refresh:** `acquisition.py` reads the latest cached date, computes the delta to today (or a specified end date), fetches only the delta, appends, and updates hashes in the manifest.
+**Refresh:** every run re-fetches the full window rather than appending a delta (deviation from v1). yfinance retroactively re-adjusts historical prices when new dividends or splits occur, so appending can produce inconsistent series; a full fetch takes about 30 seconds. The manifest's hashes record which version of the data a given set of results used.
 
-## 7. Initial diagnostics (Day 1-2 deliverables)
+## 7. Initial diagnostics 
 
 Produced by `notebooks/01_data_diagnostics.ipynb` and saved to `memo/figures/` and `memo/tables/`:
 
 1. **Coverage table** (`coverage.csv`): per-instrument first observation, last observation, total N obs, % missing on NYSE trading days within the instrument's live period, inception date, bucket.
-2. **Rolling coverage plot** (`coverage_rolling.png`): count of live instruments per date across 2010-2024.
+2. **Rolling coverage plot** (`coverage_rolling.png`): count of live instruments per date.
 3. **Return distribution stats** (`return_stats.csv`): per instrument — mean, std, skew, excess kurtosis, min, max, ADF test statistic and p-value.
-4. **Full-sample correlation heatmap** (`correlation_full.png`): 75×75 Pearson correlation of log-returns, ordered by bucket, then within-bucket by sector (equities) or intuitive grouping.
-5. **Rolling median pairwise correlation** (`correlation_rolling.png`): median off-diagonal pairwise correlation on a 63-day rolling window — visualises regime shifts before formal regime labelling later in the project.
+4. **Full-sample correlation heatmap** (`correlation_full.png`): 75×75 Pearson correlation of log-returns, ordered by bucket, with bucket labels on the diagonal blocks.
+5. **Rolling median pairwise correlation** (`correlation_rolling.png`): median off-diagonal pairwise correlation on a 63-day rolling window.
 
-## 8. Open questions / working assumptions
+The committed figures and tables were computed on data ending 2024-12-31 and will be regenerated on the 2010–2025 window together with the results notebooks.
 
-- **Outlier window (63 days) and z-threshold (8):** conservative defaults; may tighten after seeing the anomalies log on real data.
-- **Minimum observation threshold for post-inception instruments** (default 60): finalise once coverage table is in hand.
-- **PFF vs. financials bucket:** preferred stock is subordinated financial credit; likely high correlation with XLF and financial-sector equities. Kept in vol/spread bucket for now; re-evaluate after seeing correlation heatmap.
-- **USO April 2020 event:** the roll-methodology change is a real structural break; decide whether to add a regime dummy or treat as-is after inspecting the return series.
-- **Spinoff-adjusted price verification:** yfinance adjusted close *should* handle JNJ/Kenvue, MMM/Solventum, MDT/Covidien, KMB/Halyard, IBM/Kyndryl, PFE/Viatris, MRK/Organon, HON/Garrett+Resideo — spot-check each against a second source (Bloomberg terminal via university access, or Wikipedia's split-adjusted history).
-- **Whether to include GOOG or GOOGL:** neither in current list (Class A / Class C question, plus 2014 split into two classes complicates pre-2014 history). Reconsider if tech coverage feels thin post-diagnostics.
 
-## 9. Known limitations
+## 8. Known limitations
 
 - **Survivorship bias:** the Jan-2010-membership-plus-survivorship filter excludes companies that went bankrupt, were acquired, or restructured out of existence during the window. Biases the equities panel toward higher-return, lower-tail-risk names than the "true" S&P 500 experience. Acceptable for a *comparative* estimator study (all estimators see the same biased panel); material for absolute performance claims.
 - **US-centric universe:** regional and FX ETFs partially offset, but the study is not globally diversified in the sense a real institutional risk system would require.
 - **Daily frequency only:** intraday effects (overnight vs. intraday returns, autocorrelation in HY credit) are pooled into a single daily observation.
-- **yfinance data quality:** free retail data source; occasional bad ticks and split-adjustment quirks known. Outlier-flagging in §5.4 partially mitigates.
-
-## 10. Change log
-
-- **v1 (2026-09-22):** initial draft. Universe finalised at 75 instruments across five buckets.
+- **yfinance data quality:** free retail data source; occasional bad ticks and split-adjustment quirks known. Outlier flagging in §5.4 partially mitigates; the checks on the 2010–2025 fetch found no data errors.
+- **Early stress episodes outside the backtest:** the 2011 and 2013 stress episodes fall in the burn-in, before the backtest starts in 2015.
