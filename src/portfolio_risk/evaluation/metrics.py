@@ -37,6 +37,8 @@ from scipy.stats import norm
 TRADING_DAYS: int = 252
 DEFAULT_RISK_FREE: str = "BIL"
 DEFAULT_NW_LAGS: int = 3
+#: Fewest periods for which the Mincer–Zarnowitz regression is reported.
+MIN_PERIODS_MZ: int = 20
 
 
 # ── Criterion A: losses ───────────────────────────────────────────────────────
@@ -123,18 +125,21 @@ def criterion_a_table(
     forecasts: pd.DataFrame,
     by: Sequence[str] = ("estimator", "portfolio"),
     lags: int = DEFAULT_NW_LAGS,
+    min_periods_mz: int = MIN_PERIODS_MZ,
 ) -> pd.DataFrame:
     """Criterion A metrics for each group of a forecasts table.
 
     Columns: ``n_periods``, ``mae``, ``qlike``, ``bias_ratio``, ``mz_a``,
-    ``mz_b``, ``mz_b_se`` (Newey–West), ``mz_r2``.
+    ``mz_b``, ``mz_b_se`` (Newey–West), ``mz_r2``. The regression columns are
+    NaN for groups with fewer than ``min_periods_mz`` periods (e.g. the shock
+    regimes), where a two-parameter regression is not meaningful.
     """
     data = add_losses(forecasts)
     rows = []
     for key, g in data.groupby(list(by), sort=False):
         beta, se, r2 = (
             newey_west_ols(g["realised_var"].to_numpy(), g["forecast_var"].to_numpy(), lags)
-            if len(g) > 2
+            if len(g) >= max(min_periods_mz, 3)
             else (np.full(2, np.nan), np.full(2, np.nan), float("nan"))
         )
         rows.append(
@@ -183,6 +188,24 @@ def simple_portfolio_returns(
     frame = pd.DataFrame(out, index=period_of_day.index)
     frame.columns = pd.MultiIndex.from_tuples(list(out), names=["estimator", "portfolio"])
     return frame
+
+
+def excess_simple_returns(
+    weights: pd.DataFrame,
+    log_returns: pd.DataFrame,
+    period_of_day: pd.Series,
+    risk_free: str | None = DEFAULT_RISK_FREE,
+) -> pd.DataFrame:
+    """Daily simple portfolio returns minus the risk-free instrument's simple return.
+
+    Same layout as :func:`simple_portfolio_returns`. With ``risk_free=None`` the
+    raw simple returns are returned.
+    """
+    returns = simple_portfolio_returns(weights, log_returns, period_of_day)
+    if risk_free is None:
+        return returns
+    rf = np.expm1(log_returns.loc[returns.index, risk_free].to_numpy(dtype=float))
+    return returns.sub(rf, axis=0)
 
 
 def turnover_series(
@@ -242,23 +265,18 @@ def criterion_b_table(
         rebalances after the first), ``n_eff``, ``max_abs_weight`` and
         ``gross_exposure`` (means over rebalances), and ``n_days``.
     """
-    returns = simple_portfolio_returns(weights, log_returns, period_of_day)
+    excess = excess_simple_returns(weights, log_returns, period_of_day, risk_free)
     turnover = turnover_series(weights, log_returns, period_of_day)
     w = weights
     if periods is not None:
         keep = set(periods)
-        day_mask = period_of_day.isin(keep).to_numpy()
-        returns = returns.loc[day_mask]
+        excess = excess.loc[period_of_day.isin(keep).to_numpy()]
         turnover = turnover[turnover.index.get_level_values("k").isin(keep)]
         w = weights[weights.index.get_level_values("k").isin(keep)]
-    excess = returns
-    if risk_free is not None:
-        rf = np.expm1(log_returns.loc[returns.index, risk_free].to_numpy(dtype=float))
-        excess = returns.sub(rf, axis=0)
 
     sd = excess.std(ddof=1)
     rows = []
-    for col in returns.columns:
+    for col in excess.columns:
         est, port = str(col[0]), str(col[1])
         wk = w.xs((est, port), level=("estimator", "portfolio")).to_numpy()
         t_mean = (
@@ -287,11 +305,13 @@ def criterion_b_table(
 __all__ = [
     "DEFAULT_NW_LAGS",
     "DEFAULT_RISK_FREE",
+    "MIN_PERIODS_MZ",
     "TRADING_DAYS",
     "add_losses",
     "criterion_a_table",
     "criterion_b_table",
     "diebold_mariano",
+    "excess_simple_returns",
     "newey_west_ols",
     "qlike",
     "simple_portfolio_returns",
