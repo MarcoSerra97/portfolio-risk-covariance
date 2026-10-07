@@ -2,7 +2,7 @@
 
 **Project:** portfolio-risk-covariance
 **Scope:** `src/portfolio_risk/evaluation/` — backtest engine and Criteria A, B, C
-**Status:** Draft v1.4
+**Status:** Draft v1.5
 **Author:** Marco Serra
 **Last updated:** 2026-10-05
 
@@ -79,7 +79,7 @@ Per (estimator, portfolio), over all holding periods:
 |---|---|---|
 | MAE | mean of \|v̂_τ − v_τ\| | Co-primary; reported per portfolio only (variance units) |
 | QLIKE | mean of v_τ/v̂_τ − log(v_τ/v̂_τ) − 1 | Co-primary |
-| Calibration | Mincer–Zarnowitz regression v_τ = a + b·v̂_τ + ε; report b with Newey–West (HAC) standard errors and R² (b = 1 ideal) | Secondary |
+| Calibration | Mincer–Zarnowitz regression v_τ = a + b·v̂_τ + ε; report b with Newey–West (HAC) standard errors and R² (b = 1 ideal); only for groups of at least 20 periods (not within the shock regimes) | Secondary |
 | Bias ratio | mean of v_τ / v̂_τ (1 = unbiased; > 1 = forecasts too low) | Secondary |
 | Error heteroskedasticity | errors against forecast level | Secondary (figure) |
 
@@ -92,6 +92,8 @@ Per (estimator, portfolio), over all holding periods:
 **Guards.** QLIKE requires v̂_τ > 0 and v_τ > 0; non-positive values raise an error rather than being silently dropped.
 
 ## 8. Criterion B — optimisation quality (risk parity, min-var long-only, min-var long-short)
+
+Criterion B tables also report equal weight as a reference row; the comparison itself concerns the three optimised portfolios.
 
 Out-of-sample daily portfolio returns are computed with simple returns, which are exact for constant weights: R_t^p = Σᵢ w_{i,τ} (exp(r_{i,t}) − 1), and concatenated across all holding periods. Weights are held constant within each period, following Ledoit & Wolf (2017).
 
@@ -122,14 +124,16 @@ Period 60 (2020-01-06 to 2020-02-04) is unclassified.
 
 **Why majority-of-days, and why the tariff shock starts in March.** With 21-day blocks anchored at the end of 2014, the crash days of 2–8 April 2025 fall inside period 122 (2025-03-12 to 2025-04-09), most of whose days are in March. A sub-period starting on 1 April would leave the crash in Calm II under either assignment rule. The episode itself began earlier: equities peaked in mid-February 2025 and fell about 10% into mid-March on tariff fears, before the early-April crash and the recovery after the 9 April pause, with volatility normalising by late May. Defining the sub-period as March–May captures the slide, the crash and the recovery. For COVID, the majority rule places the February–March crash in periods 61–62.
 
-- **Primary:** the A metrics (MAE, QLIKE) and the B metric (realised volatility, as a ratio to the sample covariance) recomputed regime by regime, with bootstrap intervals.
+- **Primary:** the A metrics (MAE, QLIKE) and the B metric (realised volatility, as a ratio to the sample covariance) recomputed regime by regime, with paired bootstrap intervals for the MAE and QLIKE differences and the volatility ratio against the sample covariance.
+- **Resampling within a regime** uses only that regime's periods (A) or days (B). Calm II is split by the tariff shock, so its two parts are resampled as one sequence; a block may join the end of February 2025 to June 2025. The effect is minor and noted in the memo.
 - **Secondary:** rank stability of the estimators across regimes (Kendall's W, plus a rank table).
 - **Caveat:** the COVID regime contains 4 holding periods and the tariff shock 3. Their intervals will be wide, and conclusions from them are stated as indicative.
 
 ## 10. Bootstrap
 
 - **Criterion A:** stationary block bootstrap (Politis–Romano) on the sequence of holding periods, mean block length 3 periods, 2,000 replications, percentile intervals.
-- **Criterion B:** stationary block bootstrap on the daily out-of-sample returns, mean block length 21 days, 2,000 replications.
+- **Criterion B:** stationary block bootstrap on the daily out-of-sample excess returns, mean block length 21 days, 2,000 replications.
+- **Block-length sensitivity:** full-sample intervals recomputed with longer mean blocks (A: 6 and 12 periods; B: 63 and 126 days); a conclusion is called robust only if it holds at every block length.
 - **Paired resampling:** the same resampled indices are used for every estimator within a replication, so intervals for differences between estimators (for example, QLIKE of QIS minus QLIKE of the sample covariance) account for their correlation.
 - **Seeds:** fixed and recorded, so every table is reproducible.
 
@@ -172,3 +176,4 @@ src/portfolio_risk/evaluation/
 - **v1.2 (2026-10-05):** tariff-shock sub-period (2025-03 to 2025-05) added; regime assignment by majority of days; holding-period numbers listed for the shock regimes.
 - **v1.3 (2026-10-05):** QIS on raw and on standardised returns set as equal variants.
 - **v1.4 (2026-10-07):** return conventions (log for A, simple excess over BIL for B); textbook conventions verified (Ledoit & Wolf 2017 constant weights; DeMiguel et al. 2009 turnover, first rebalance excluded); MAE per portfolio; HAC standard errors for calibration; Diebold–Mariano on the full sample only; QLIKE guards; realised-variance properties summarised.
+- **v1.5 (2026-10-07):** `regimes.py` (Criterion C): MAE and QLIKE differences bootstrapped; calibration regression only for groups of at least 20 periods; block-length sensitivity specified; resampling within split regimes noted; equal weight shown as a reference row in Criterion B tables.

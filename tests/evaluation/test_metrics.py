@@ -112,6 +112,14 @@ class TestCriterionATable:
         assert low["qlike"] == pytest.approx(2 - np.log(2) - 1)
         assert low["mz_b"] == pytest.approx(2.0)
 
+    def test_regression_needs_enough_periods(self) -> None:
+        f = _forecasts({"a": 1.5}, n=10)
+        row = m.criterion_a_table(f).iloc[0]
+        assert np.isnan(row["mz_b"]) and np.isnan(row["mz_r2"])
+        assert row["bias_ratio"] == pytest.approx(1.5)  # other metrics still reported
+        row = m.criterion_a_table(f, min_periods_mz=5).iloc[0]
+        assert row["mz_b"] == pytest.approx(1.5)
+
     def test_group_by_regime(self) -> None:
         f = _forecasts({"a": 1.0})
         f["regime"] = np.where(f["k"] < 20, "calm", "shock")
@@ -204,6 +212,7 @@ class TestOnBacktest:
         a = m.criterion_a_table(res.forecasts)
         b = m.criterion_b_table(res.weights, returns, res.period_of_day)
         assert len(a) == 2 * 4 and len(b) == 2 * 4
-        assert np.isfinite(a[["mae", "qlike", "bias_ratio", "mz_b"]].to_numpy()).all()
+        assert np.isfinite(a[["mae", "qlike", "bias_ratio"]].to_numpy()).all()
+        assert (a["n_periods"] < m.MIN_PERIODS_MZ).all() and a["mz_b"].isna().all()
         assert np.isfinite(b[["volatility", "turnover", "n_eff"]].to_numpy()).all()
         assert (b.xs("equal_weight", level="portfolio")["turnover"] < 0.2).all()
