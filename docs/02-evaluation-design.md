@@ -2,7 +2,7 @@
 
 **Project:** portfolio-risk-covariance
 **Scope:** `src/portfolio_risk/evaluation/` — backtest engine and Criteria A, B, C
-**Status:** Draft v1.3
+**Status:** Draft v1.4
 **Author:** Marco Serra
 **Last updated:** 2026-10-05
 
@@ -24,6 +24,8 @@ This document specifies how every (estimator, portfolio) pair is evaluated: the 
 | Data window | Extended to 2025-12-31 | Decided; action in §13 |
 | Regimes | Five regimes plus a 2025 tariff-shock sub-period; assignment by majority of days | Decided |
 | QIS | Two equal variants, both evaluated in full: QIS on raw returns (as published) and QIS on standardised returns | Decided |
+| Return conventions | Criterion A: log returns (consistent with the log-return covariance being forecast). Criterion B: simple returns, exact for constant weights, in excess of BIL | Decided |
+| Textbook conventions | Weights constant within each 21-day period (Ledoit & Wolf, 2017); turnover from drifted weights (DeMiguel, Garlappi & Uppal, 2009) | Decided |
 
 ## 3. Calendar
 
@@ -66,7 +68,7 @@ The BIL exclusion is applied through `portfolios.constructions.with_excluded`. E
 For each estimator, portfolio and rebalance date:
 
 - **Forecast:** v̂_τ = H · w_τ′ Σ̂_τ w_τ, where Σ̂_τ is the estimator's `covariance_`. For DCC this is the average forecast covariance over the holding period, so the same formula applies to every estimator.
-- **Realised:** v_τ = Σ_{t=τ+1}^{τ+H} (w_τ′ r_t)², the sum of squared daily portfolio log-returns (zero-mean approximation).
+- **Realised:** v_τ = Σ_{t=τ+1}^{τ+H} (w_τ′ r_t)², the sum of squared daily portfolio log-returns (zero-mean approximation). It is unbiased for the expected sum of daily variances up to a relative bias μ²/σ² ≈ 0.2%, and noisy: relative error √((κ−1)/H), 31% for Gaussian returns, about 40–60% for the study's portfolios. Ignoring the mean has lower mean squared error than demeaning within the period. Derivations in `docs/notes/estimators_note.tex` §4.
 - **Weights within the holding period** are held constant at w_τ (daily rebalancing to target), consistent with the forecast. Buy-and-hold drift is used only for turnover (§8).
 
 ## 7. Criterion A — risk-measurement accuracy (all four portfolios)
@@ -75,9 +77,9 @@ Per (estimator, portfolio), over all holding periods:
 
 | Metric | Definition | Role |
 |---|---|---|
-| MAE | mean of \|v̂_τ − v_τ\| | Co-primary |
+| MAE | mean of \|v̂_τ − v_τ\| | Co-primary; reported per portfolio only (variance units) |
 | QLIKE | mean of v_τ/v̂_τ − log(v_τ/v̂_τ) − 1 | Co-primary |
-| Calibration | Mincer–Zarnowitz regression v_τ = a + b·v̂_τ + ε; report b and R² (b = 1 ideal) | Secondary |
+| Calibration | Mincer–Zarnowitz regression v_τ = a + b·v̂_τ + ε; report b with Newey–West (HAC) standard errors and R² (b = 1 ideal) | Secondary |
 | Bias ratio | mean of v_τ / v̂_τ (1 = unbiased; > 1 = forecasts too low) | Secondary |
 | Error heteroskedasticity | errors against forecast level | Secondary (figure) |
 
@@ -85,17 +87,19 @@ Per (estimator, portfolio), over all holding periods:
 
 **Why QLIKE as well as MAE.** The realised variance is a noisy proxy (about 31% relative error with 21 daily returns). QLIKE ranks forecasts consistently under a noisy proxy; MAE does not, because it targets the median of a right-skewed quantity and so can favour forecasts that are too low (Patton, 2011). QLIKE is also scale-free, so it can be compared across portfolios and across calm and crisis months. Where the two rankings disagree, QLIKE governs statements about forecasting skill, and the disagreement is reported.
 
-**Pairwise comparisons.** For each estimator against the sample covariance, the mean QLIKE difference with a paired block-bootstrap confidence interval (§10). A Diebold–Mariano test is reported alongside as a cross-check.
+**Pairwise comparisons.** For each estimator against the sample covariance, the mean QLIKE difference with a paired block-bootstrap confidence interval (§10). A Diebold–Mariano test (Newey–West variance, 3 lags) is reported alongside as a cross-check, on the full sample only: the shock regimes have too few periods for its asymptotics.
+
+**Guards.** QLIKE requires v̂_τ > 0 and v_τ > 0; non-positive values raise an error rather than being silently dropped.
 
 ## 8. Criterion B — optimisation quality (risk parity, min-var long-only, min-var long-short)
 
-Out-of-sample daily portfolio returns w_τ′ r_t are concatenated across all holding periods.
+Out-of-sample daily portfolio returns are computed with simple returns, which are exact for constant weights: R_t^p = Σᵢ w_{i,τ} (exp(r_{i,t}) − 1), and concatenated across all holding periods. Weights are held constant within each period, following Ledoit & Wolf (2017).
 
 | Metric | Definition | Role |
 |---|---|---|
-| Realised volatility | √252 × standard deviation of the daily out-of-sample returns | Primary |
-| Turnover | Σᵢ \|w_{i,τ} − w̃_{i,τ}\| per rebalance, where w̃ are the previous weights after buy-and-hold drift over the holding period (computed from simple returns exp(r) − 1) | Secondary |
-| Concentration | effective number of assets N_eff = 1 / Σᵢ w_i² (and maximum weight) | Secondary |
+| Realised volatility | √252 × standard deviation of the daily out-of-sample returns in excess of BIL | Primary |
+| Turnover | Σᵢ \|w_{i,τ} − w̃_{i,τ}\| per rebalance, where w̃ are the previous weights after drifting with prices over the holding period (DeMiguel, Garlappi & Uppal, 2009), computed from simple returns; averaged over rebalances, the first (set-up from cash) excluded | Secondary |
+| Concentration | effective number of assets N_eff = 1 / Σᵢ w_i² and maximum absolute weight; for long-short, N_eff is indicative only | Secondary |
 | Gross exposure | Σᵢ \|w_i\| (long-short only) | Secondary |
 | Realised Sharpe ratio | mean excess return over BIL, annualised, divided by realised volatility | Secondary |
 
@@ -159,7 +163,6 @@ src/portfolio_risk/evaluation/
 
 ## 14. Open questions
 
-- **Diebold–Mariano long-run variance:** Newey–West lag for the monthly loss series (working default: 3).
 - **Stress-test stratification:** whether to keep bucket proportions fixed across N or sample uniformly.
 
 ## 15. Change log
@@ -168,3 +171,4 @@ src/portfolio_risk/evaluation/
 - **v1.1 (2026-10-05):** Ledoit-Wolf on raw and on standardised returns set as equal variants.
 - **v1.2 (2026-10-05):** tariff-shock sub-period (2025-03 to 2025-05) added; regime assignment by majority of days; holding-period numbers listed for the shock regimes.
 - **v1.3 (2026-10-05):** QIS on raw and on standardised returns set as equal variants.
+- **v1.4 (2026-10-07):** return conventions (log for A, simple excess over BIL for B); textbook conventions verified (Ledoit & Wolf 2017 constant weights; DeMiguel et al. 2009 turnover, first rebalance excluded); MAE per portfolio; HAC standard errors for calibration; Diebold–Mariano on the full sample only; QLIKE guards; realised-variance properties summarised.
