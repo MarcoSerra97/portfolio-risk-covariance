@@ -99,6 +99,27 @@ def _forecasts(ratio_by_est: dict[str, float], n: int = 50) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+class TestLogLogSlope:
+    def test_noisy_proxy_with_constant_optimism(self) -> None:
+        """Forecasts track true risk; realised = 2.5 x forecast x chi2 noise.
+
+        The levels slope picks up the optimism (about 2.5); the log slope stays near 1.
+        """
+        rng = np.random.default_rng(9)
+        n = 400
+        true = np.exp(rng.normal(0.0, 0.8, n))
+        rows = [
+            {"estimator": "e", "portfolio": "p", "k": k, "regime": "r",
+             "forecast_var": true[k] / 2.5,
+             "realised_var": true[k] * rng.chisquare(21) / 21}
+            for k in range(n)
+        ]  # fmt: skip
+        row = m.criterion_a_table(pd.DataFrame(rows)).iloc[0]
+        assert row["mz_b"] == pytest.approx(2.5, rel=0.1)
+        assert row["mzlog_b"] == pytest.approx(1.0, abs=0.05)
+        assert row["bias_ratio"] == pytest.approx(2.5, rel=0.05)
+
+
 class TestCriterionATable:
     def test_values(self) -> None:
         table = m.criterion_a_table(_forecasts({"perfect": 1.0, "low": 2.0}))
@@ -107,15 +128,20 @@ class TestCriterionATable:
         assert perfect["mae"] == pytest.approx(0.0, abs=1e-12)
         assert perfect["bias_ratio"] == pytest.approx(1.0)
         assert perfect["mz_b"] == pytest.approx(1.0) and perfect["mz_r2"] == pytest.approx(1.0)
+        assert perfect["mzlog_b"] == pytest.approx(1.0) and perfect["mzlog_a"] == pytest.approx(0.0)
         low = table.loc[("low", "p")]
         assert low["bias_ratio"] == pytest.approx(2.0)
         assert low["qlike"] == pytest.approx(2 - np.log(2) - 1)
+        # A constant multiplicative bias inflates the levels slope but moves only the log intercept.
         assert low["mz_b"] == pytest.approx(2.0)
+        assert low["mzlog_b"] == pytest.approx(1.0)
+        assert low["mzlog_a"] == pytest.approx(np.log(2.0))
 
     def test_regression_needs_enough_periods(self) -> None:
         f = _forecasts({"a": 1.5}, n=10)
         row = m.criterion_a_table(f).iloc[0]
         assert np.isnan(row["mz_b"]) and np.isnan(row["mz_r2"])
+        assert np.isnan(row["mzlog_b"]) and np.isnan(row["mzlog_r2"])
         assert row["bias_ratio"] == pytest.approx(1.5)  # other metrics still reported
         row = m.criterion_a_table(f, min_periods_mz=5).iloc[0]
         assert row["mz_b"] == pytest.approx(1.5)

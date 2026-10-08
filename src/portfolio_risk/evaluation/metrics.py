@@ -5,9 +5,13 @@ Implements ``docs/02-evaluation-design.md`` §7 and §8.
 Criterion A (risk-measurement accuracy) works on the per-period forecast and
 realised variances recorded by the backtest, both built from log returns:
 
-* MAE and QLIKE (co-primary), the bias ratio mean(v / v̂), and the
-  Mincer–Zarnowitz calibration regression v = a + b v̂ with Newey–West
-  standard errors;
+* MAE and QLIKE (co-primary) and the bias ratio mean(v / v̂) (level);
+* the Mincer–Zarnowitz calibration regression in logs,
+  log v = a + b log v̂, whose slope measures proportional tracking: a
+  constant multiplicative bias (e.g. the optimism of optimised portfolios)
+  moves only the intercept. The regression in levels, v = a + b v̂, is also
+  reported for comparison with the literature; for optimised portfolios its
+  slope is confounded by that optimism. Both use Newey–West standard errors;
 * a Diebold–Mariano test for comparing two estimators' loss series.
 
 Criterion B (optimisation quality) recomputes the daily out-of-sample returns
@@ -129,19 +133,23 @@ def criterion_a_table(
 ) -> pd.DataFrame:
     """Criterion A metrics for each group of a forecasts table.
 
-    Columns: ``n_periods``, ``mae``, ``qlike``, ``bias_ratio``, ``mz_a``,
-    ``mz_b``, ``mz_b_se`` (Newey–West), ``mz_r2``. The regression columns are
-    NaN for groups with fewer than ``min_periods_mz`` periods (e.g. the shock
-    regimes), where a two-parameter regression is not meaningful.
+    Columns: ``n_periods``, ``mae``, ``qlike``, ``bias_ratio``; the log-log
+    calibration regression ``mzlog_a``, ``mzlog_b``, ``mzlog_b_se``
+    (Newey–West), ``mzlog_r2`` (tracking measure); and the levels regression
+    ``mz_a``, ``mz_b``, ``mz_b_se``, ``mz_r2`` (conventional, appendix). The
+    regression columns are NaN for groups with fewer than ``min_periods_mz``
+    periods (e.g. the shock regimes), where a two-parameter regression is not
+    meaningful.
     """
     data = add_losses(forecasts)
     rows = []
     for key, g in data.groupby(list(by), sort=False):
-        beta, se, r2 = (
-            newey_west_ols(g["realised_var"].to_numpy(), g["forecast_var"].to_numpy(), lags)
-            if len(g) >= max(min_periods_mz, 3)
-            else (np.full(2, np.nan), np.full(2, np.nan), float("nan"))
-        )
+        enough = len(g) >= max(min_periods_mz, 3)
+        nan_fit = (np.full(2, np.nan), np.full(2, np.nan), float("nan"))
+        v = g["realised_var"].to_numpy()
+        f = g["forecast_var"].to_numpy()
+        beta, se, r2 = newey_west_ols(v, f, lags) if enough else nan_fit
+        lbeta, lse, lr2 = newey_west_ols(np.log(v), np.log(f), lags) if enough else nan_fit
         rows.append(
             dict(zip(by, key if isinstance(key, tuple) else (key,), strict=True))
             | {
@@ -149,6 +157,10 @@ def criterion_a_table(
                 "mae": float(g["abs_error"].mean()),
                 "qlike": float(g["qlike"].mean()),
                 "bias_ratio": float(g["ratio"].mean()),
+                "mzlog_a": float(lbeta[0]),
+                "mzlog_b": float(lbeta[1]),
+                "mzlog_b_se": float(lse[1]),
+                "mzlog_r2": lr2,
                 "mz_a": float(beta[0]),
                 "mz_b": float(beta[1]),
                 "mz_b_se": float(se[1]),
