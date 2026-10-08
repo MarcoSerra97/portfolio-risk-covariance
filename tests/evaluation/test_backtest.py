@@ -231,6 +231,62 @@ class TestCache:
         assert bt.data_fingerprint(changed) != fp
 
 
+class TestDiagnostics:
+    def test_columns_per_estimator(self, returns: pd.DataFrame) -> None:
+        cfg = RunConfig(
+            estimators=("sample", "lw_std", "mp", "qis_std"), portfolios=("equal_weight",)
+        )
+        d = bt.run_backtest(returns, cfg).diagnostics
+        n_periods = len(build_schedule(returns.index))
+        assert len(d) == 4 * n_periods
+        assert (d["corr_cond"] >= 1).all()
+        assert d.loc["sample", "shrinkage"].isna().all()
+        lw = d.loc["lw_std", "shrinkage"]
+        assert ((lw > 0) & (lw < 1)).all()
+        assert (d.loc["mp", "n_signal"] >= 1).all()
+        qis = d.loc["qis_std"]
+        assert (qis["shrunk_eig_min"] > qis["sample_eig_min"]).all()  # QIS raises the smallest
+        assert (d.loc["sample", "n_obs"] == 252).all()
+
+    def test_matches_direct_computation(self, returns: pd.DataFrame) -> None:
+        cfg = RunConfig(estimators=("sample",), portfolios=("equal_weight",))
+        res = bt.run_backtest(returns, cfg)
+        s = build_schedule(returns.index)
+        p = s.periods[2]
+        start, end = s.rolling_window(p, 252)
+        assets = bt.run_asset_set(returns, s, p, 252)
+        cov = SampleCovariance().fit(returns.iloc[start : end + 1][assets]).covariance_
+        ev = np.linalg.eigvalsh(cov.to_numpy())
+        assert res.diagnostics.loc[("sample", 2), "cov_cond"] == pytest.approx(ev[-1] / ev[0])
+
+    def test_dcc_diagnostics(self, returns: pd.DataFrame) -> None:
+        cfg = RunConfig(estimators=("dcc",), portfolios=("equal_weight",))
+        d = bt.run_backtest(returns, cfg).diagnostics.loc["dcc"]
+        assert ((d["dcc_a"] >= 0) & (d["dcc_a"] + d["dcc_b"] < 1)).all()
+        assert (d["n_fallbacks"] >= 0).all()
+        # Expanding window: +21 days per period while the asset set is unchanged; it
+        # restarts from the newcomer's first day when an instrument (here LATE) joins.
+        same_set = d["n_assets"].diff().fillna(0) == 0
+        steps = d["n_obs"].diff()[same_set.to_numpy()].dropna()
+        assert (steps == 21).all()
+        assert (d["n_assets"].diff().dropna() >= 0).all()
+
+    def test_survive_cache(self, returns: pd.DataFrame, tmp_path: Path) -> None:
+        cfg = RunConfig(estimators=("lw_std",), portfolios=("equal_weight",))
+        first = bt.run_backtest(returns, cfg, cache_dir=tmp_path)
+        second = bt.run_backtest(returns, cfg, cache_dir=tmp_path)
+        pd.testing.assert_frame_equal(first.diagnostics, second.diagnostics)
+        assert all(f.name.endswith(f"_v{bt.CACHE_VERSION}.npz") for f in tmp_path.iterdir())
+
+    def test_old_cache_format_ignored(self, returns: pd.DataFrame, tmp_path: Path) -> None:
+        """A cache file from before diagnostics existed must be refitted, not read."""
+        cfg = RunConfig(estimators=("sample",), portfolios=("equal_weight",))
+        old = tmp_path / f"sample_w252_h21_{bt.data_fingerprint(returns)}.npz"
+        np.savez_compressed(old, periods=np.array([0]))
+        res = bt.run_backtest(returns, cfg, cache_dir=tmp_path)
+        assert "cov_cond" in res.diagnostics.columns
+
+
 class TestSaveLoad:
     def test_roundtrip(self, result: bt.BacktestResult, config: RunConfig, tmp_path: Path) -> None:
         result.save(tmp_path)
@@ -241,6 +297,7 @@ class TestSaveLoad:
         pd.testing.assert_series_equal(
             loaded.period_of_day, result.period_of_day, check_names=False
         )
+        pd.testing.assert_frame_equal(loaded.diagnostics, result.diagnostics)
 
     def test_load_rejects_mismatched_config(
         self, result: bt.BacktestResult, tmp_path: Path

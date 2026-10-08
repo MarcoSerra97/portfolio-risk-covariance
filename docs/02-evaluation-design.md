@@ -2,7 +2,7 @@
 
 **Project:** portfolio-risk-covariance
 **Scope:** `src/portfolio_risk/evaluation/` — backtest engine and Criteria A, B, C
-**Status:** Draft v1.5
+**Status:** Draft v1.8
 **Author:** Marco Serra
 **Last updated:** 2026-10-05
 
@@ -79,9 +79,12 @@ Per (estimator, portfolio), over all holding periods:
 |---|---|---|
 | MAE | mean of \|v̂_τ − v_τ\| | Co-primary; reported per portfolio only (variance units) |
 | QLIKE | mean of v_τ/v̂_τ − log(v_τ/v̂_τ) − 1 | Co-primary |
-| Calibration | Mincer–Zarnowitz regression v_τ = a + b·v̂_τ + ε; report b with Newey–West (HAC) standard errors and R² (b = 1 ideal); only for groups of at least 20 periods (not within the shock regimes) | Secondary |
+| Calibration (tracking) | Mincer–Zarnowitz regression in logs, log v_τ = a + b·log v̂_τ + ε; report b with Newey–West (HAC) standard errors and R² (b = 1: forecasts move in proportion to realised risk) | Secondary |
+| Calibration (levels) | v_τ = a + b·v̂_τ + ε, Newey–West standard errors; reported in an appendix for comparison with the literature | Appendix |
 | Bias ratio | mean of v_τ / v̂_τ (1 = unbiased; > 1 = forecasts too low) | Secondary |
 | Error heteroskedasticity | errors against forecast level | Secondary (figure) |
+
+**Why the log regression for tracking.** Write v_τ = κ_τ v̂_τ (1 + e_τ), with κ_τ the ratio of the chosen portfolio's expected realised variance to its forecast. In levels the slope is E[κ] + Cov(κ, v̂(v̂ − E v̂))/Var(v̂): it contains the average optimism. For minimum-variance portfolios built on an unbiased estimator, optimism is guaranteed (E[forecast] ≤ true minimum ≤ E[true risk], by Jensen's inequality applied to the concave function S ↦ min_w w′Sw), so the levels slope mainly measures optimism there. In logs a constant κ moves only the intercept; the slope keeps the elasticity of κ with respect to the forecast (tracking errors, regime-dependent selection) plus a Jensen term that is non-zero only if the shape of the realised-variance noise changes with the risk level. The level itself is measured by the bias ratio. Both regressions are reported only for groups of at least 20 periods (not within the shock regimes). Derivations in `docs/notes/estimators_note.tex`.
 
 **Interpretation.** Equal weight is a clean forecast test. Risk parity and minimum variance are consistency tests: their weights depend on Σ̂_τ, so forecasts are optimistic by construction.
 
@@ -132,8 +135,8 @@ Period 60 (2020-01-06 to 2020-02-04) is unclassified.
 ## 10. Bootstrap
 
 - **Criterion A:** stationary block bootstrap (Politis–Romano) on the sequence of holding periods, mean block length 3 periods, 2,000 replications, percentile intervals.
-- **Criterion B:** stationary block bootstrap on the daily out-of-sample excess returns, mean block length 21 days, 2,000 replications.
-- **Block-length sensitivity:** full-sample intervals recomputed with longer mean blocks (A: 6 and 12 periods; B: 63 and 126 days); a conclusion is called robust only if it holds at every block length.
+- **Criterion B:** stationary block bootstrap on the daily out-of-sample excess returns, mean block length 63 days, 2,000 replications. 63 trading days is the same three-month span as Criterion A's 3 periods, and longer than the typical half-life of daily volatility clustering (about 34 days at GARCH persistence 0.98), so clusters are not broken up.
+- **Block-length sensitivity:** full-sample intervals recomputed around the baselines (A: 3 periods baseline, 6 and 12 as checks; B: 63 days baseline, 21 and 126 as checks); a conclusion is called robust only if it holds at every block length.
 - **Paired resampling:** the same resampled indices are used for every estimator within a replication, so intervals for differences between estimators (for example, QLIKE of QIS minus QLIKE of the sample covariance) account for their correlation.
 - **Seeds:** fixed and recorded, so every table is reproducible.
 
@@ -153,13 +156,16 @@ src/portfolio_risk/evaluation/
 ├── backtest.py     ← fit estimators at each τ, form weights, compute forecasts and realised quantities
 ├── metrics.py      ← Criterion A and B metrics
 ├── bootstrap.py    ← stationary block bootstrap (paired)
-└── regimes.py      ← Criterion C tables and rank stability
+├── regimes.py      ← Criterion C tables, paired comparisons, block sensitivity, rank stability
+├── report.py       ← every table for one run, settings read from the run's configuration
+└── run.py          ← command line: python -m portfolio_risk.evaluation.run --window 252
 ```
 
-- **Caching:** fitted covariance matrices are written to `data/cache/` (git-ignored), keyed by estimator, window length and τ, so metrics and figures can be recomputed without refitting.
+- **Caching:** fitted covariance matrices and per-fit diagnostics are written to `data/cache/` (git-ignored), one file per estimator and run, keyed by estimator, window length, holding period, a fingerprint of the returns data and a cache-format version, so metrics and figures can be recomputed without refitting and changed data or code never reuse stale fits.
+- **Diagnostics recorded per fit:** condition number and extreme eigenvalues of the covariance and of the implied correlation matrix; Ledoit–Wolf shrinkage intensity; MP number of signal eigenvalues and edge; QIS smallest sample and shrunk eigenvalues; cDCC (a, b), convergence, mean GARCH persistence and number of fallbacks (§11).
 - **Determinism:** no randomness in the backtest itself; seeds only in the bootstrap and the stress-test subsets.
 - **Runtime (estimate):** static estimators take milliseconds per fit. DCC takes about 2 seconds per fit; it does not depend on the window length, so about 131 refits ≈ 5 minutes once. Portfolio construction is under 35 ms per call. A full run, both window lengths, is a few minutes plus the bootstrap.
-- **Outputs:** tables to `memo/tables/`, figures to `memo/figures/`, as for the diagnostics.
+- **Outputs:** backtest results to `data/results/w<window>/` (git-ignored); tables as CSV to `memo/tables/w<window>/`; figures to `memo/figures/`.
 
 ## 13. Actions before implementation
 
@@ -177,3 +183,6 @@ src/portfolio_risk/evaluation/
 - **v1.3 (2026-10-05):** QIS on raw and on standardised returns set as equal variants.
 - **v1.4 (2026-10-07):** return conventions (log for A, simple excess over BIL for B); textbook conventions verified (Ledoit & Wolf 2017 constant weights; DeMiguel et al. 2009 turnover, first rebalance excluded); MAE per portfolio; HAC standard errors for calibration; Diebold–Mariano on the full sample only; QLIKE guards; realised-variance properties summarised.
 - **v1.5 (2026-10-07):** `regimes.py` (Criterion C): MAE and QLIKE differences bootstrapped; calibration regression only for groups of at least 20 periods; block-length sensitivity specified; resampling within split regimes noted; equal weight shown as a reference row in Criterion B tables.
+- **v1.6 (2026-10-07):** Criterion B mean block length set to 63 days (from 21), matching Criterion A's three-month span; sensitivity range 21 and 126 days.
+- **v1.7 (2026-10-07):** calibration: the log-log Mincer–Zarnowitz slope is the tracking measure for every portfolio (the levels regression is confounded by the optimism of optimised portfolios); levels regression moved to an appendix.
+- **v1.8 (2026-10-07):** per-fit diagnostics recorded in the backtest and cache (cache-format version added to the key); `report.py` and `run.py` added; output locations specified.

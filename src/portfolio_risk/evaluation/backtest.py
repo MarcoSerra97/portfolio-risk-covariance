@@ -16,10 +16,15 @@ window length), at each rebalance of the schedule:
    variance ``Σ_t (w' r_t)²`` over the holding period, the weights, and the
    daily out-of-sample portfolio returns ``w' r_t`` (weights held constant).
 
-Fitted covariances are cached on disk, keyed by estimator, window length,
-holding period and a fingerprint of the returns data, so metrics and figures
-can be recomputed without refitting, and re-fetched data is never matched with
-stale fits.
+Each fit also records numerical diagnostics (condition numbers and extreme
+eigenvalues of the covariance and of the implied correlation matrix, plus the
+estimator's own fitted quantities: shrinkage intensity, number of MP signal
+eigenvalues, QIS eigenvalue shrinkage, DCC parameters and GARCH fallbacks).
+
+Fitted covariances and diagnostics are cached on disk, keyed by estimator,
+window length, holding period, a fingerprint of the returns data and the cache
+format version, so metrics and figures can be recomputed without refitting,
+and re-fetched data is never matched with stale fits.
 """
 
 from __future__ import annotations
@@ -65,26 +70,79 @@ def data_fingerprint(returns: pd.DataFrame) -> str:
     return h.hexdigest()[:12]
 
 
+#: Bumped whenever the cache contents change, so older cache files are ignored.
+CACHE_VERSION: int = 2
+
+Diagnostics = dict[int, dict[str, float]]
+
+
 def _cache_path(cache_dir: Path, estimator: str, config: RunConfig, fingerprint: str) -> Path:
-    return cache_dir / f"{estimator}_w{config.window_length}_h{config.holding}_{fingerprint}.npz"
+    name = f"{estimator}_w{config.window_length}_h{config.holding}_{fingerprint}"
+    return cache_dir / f"{name}_v{CACHE_VERSION}.npz"
 
 
-def _save_cache(path: Path, covs: dict[int, pd.DataFrame]) -> None:
+def _save_cache(path: Path, covs: dict[int, pd.DataFrame], diags: Diagnostics) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     arrays: dict[str, np.ndarray] = {}
     for k, cov in covs.items():
         arrays[f"cov_{k}"] = cov.to_numpy()
         arrays[f"assets_{k}"] = np.array([str(c) for c in cov.columns])
     arrays["periods"] = np.array(sorted(covs))
+    arrays["diagnostics_json"] = np.array(json.dumps({str(k): v for k, v in diags.items()}))
     np.savez_compressed(path, **arrays)  # type: ignore[arg-type]
 
 
-def _load_cache(path: Path) -> dict[int, pd.DataFrame]:
+def _load_cache(path: Path) -> tuple[dict[int, pd.DataFrame], Diagnostics]:
     with np.load(path, allow_pickle=False) as data:
-        out: dict[int, pd.DataFrame] = {}
+        covs: dict[int, pd.DataFrame] = {}
         for k in data["periods"].tolist():
             assets = [str(a) for a in data[f"assets_{k}"]]
-            out[int(k)] = pd.DataFrame(data[f"cov_{k}"], index=assets, columns=assets)
+            covs[int(k)] = pd.DataFrame(data[f"cov_{k}"], index=assets, columns=assets)
+        raw = json.loads(str(data["diagnostics_json"]))
+    return covs, {int(k): v for k, v in raw.items()}
+
+
+# ── diagnostics ───────────────────────────────────────────────────────────────
+
+
+def estimator_diagnostics(est: object, cov: pd.DataFrame, n_obs: int) -> dict[str, float]:
+    """Numerical diagnostics of one fit.
+
+    Always: ``n_obs``, ``n_assets``, extreme eigenvalues and condition number
+    of the covariance and of the implied correlation matrix (the latter is
+    free of volatility scale). When the estimator exposes them: ``shrinkage``
+    (Ledoit-Wolf), ``n_signal`` and ``mp_edge`` (MP), ``sample_eig_min`` and
+    ``shrunk_eig_min`` (QIS; MP gives the sample value), ``dcc_a``, ``dcc_b``,
+    ``dcc_converged``, ``n_fallbacks`` and ``garch_persistence_mean`` (DCC).
+    """
+    m = cov.to_numpy(dtype=float)
+    sd = np.sqrt(np.diag(m))
+    corr = m / np.outer(sd, sd)
+    ev = np.linalg.eigvalsh(m)
+    evc = np.linalg.eigvalsh(corr)
+    out: dict[str, float] = {
+        "n_obs": float(n_obs),
+        "n_assets": float(m.shape[0]),
+        "cov_eig_min": float(ev[0]),
+        "cov_eig_max": float(ev[-1]),
+        "cov_cond": float(ev[-1] / ev[0]),
+        "corr_eig_min": float(evc[0]),
+        "corr_eig_max": float(evc[-1]),
+        "corr_cond": float(evc[-1] / evc[0]),
+    }
+    simple = {"shrinkage_": "shrinkage", "n_signal_": "n_signal", "edge_": "mp_edge",
+              "dcc_a_": "dcc_a", "dcc_b_": "dcc_b", "dcc_converged_": "dcc_converged"}  # fmt: skip
+    for attr, key in simple.items():
+        if hasattr(est, attr):
+            out[key] = float(getattr(est, attr))
+    if hasattr(est, "eigenvalues_"):
+        out["sample_eig_min"] = float(np.min(est.eigenvalues_))
+    if hasattr(est, "shrunk_eigenvalues_"):
+        out["shrunk_eig_min"] = float(np.min(est.shrunk_eigenvalues_))
+    if hasattr(est, "fallbacks_"):
+        out["n_fallbacks"] = float(len(est.fallbacks_))
+    if hasattr(est, "garch_params_"):
+        out["garch_persistence_mean"] = float(est.garch_params_["persistence"].mean())
     return out
 
 
@@ -111,8 +169,8 @@ def fit_covariances(
     config: RunConfig,
     estimator: str,
     cache_dir: Path | None = None,
-) -> dict[int, pd.DataFrame]:
-    """Fitted covariance for every period of the schedule, for one estimator.
+) -> tuple[dict[int, pd.DataFrame], Diagnostics]:
+    """Fitted covariance and diagnostics for every period of the schedule, for one estimator.
 
     Loads from ``cache_dir`` when a matching cache file exists; otherwise fits
     and (if ``cache_dir`` is given) saves.
@@ -130,6 +188,7 @@ def fit_covariances(
 
     spec = ESTIMATORS[estimator]
     covs: dict[int, pd.DataFrame] = {}
+    diags: Diagnostics = {}
     for p in schedule.periods:
         assets = run_asset_set(returns, schedule, p, config.window_length)
         if spec.window == "rolling":
@@ -143,14 +202,15 @@ def fit_covariances(
             raise ValueError(f"{estimator}, period {p.k}: missing data for {missing} in the window")
         est = make_estimator(estimator, config).fit(window)
         covs[p.k] = est.covariance_
+        diags[p.k] = estimator_diagnostics(est, est.covariance_, len(window))
         logger.debug(
             "%s: fitted period %d (%d obs, %d assets)", estimator, p.k, len(window), len(assets)
         )
 
     if path is not None:
-        _save_cache(path, covs)
+        _save_cache(path, covs, diags)
         logger.info("Saved fits: %s", path.name)
-    return covs
+    return covs, diags
 
 
 # ── results ───────────────────────────────────────────────────────────────────
@@ -170,6 +230,8 @@ class BacktestResult:
         weights: Rebalance weights; index MultiIndex ``(estimator, portfolio, k)``,
             columns all instruments (zero where not held or not eligible).
         period_of_day: Holding-period number ``k`` for each out-of-sample day.
+        diagnostics: Per-fit numerical diagnostics; index ``(estimator, k)``,
+            one column per diagnostic (NaN where an estimator does not have it).
     """
 
     config: RunConfig
@@ -177,6 +239,7 @@ class BacktestResult:
     daily_returns: pd.DataFrame
     weights: pd.DataFrame
     period_of_day: pd.Series
+    diagnostics: pd.DataFrame
 
     def save(self, directory: Path) -> None:
         """Write the result tables to ``directory`` (parquet) plus the window length (JSON)."""
@@ -187,6 +250,7 @@ class BacktestResult:
         flat.to_parquet(directory / "daily_returns.parquet")
         self.weights.to_parquet(directory / "weights.parquet")
         self.period_of_day.to_frame("k").to_parquet(directory / "period_of_day.parquet")
+        self.diagnostics.to_parquet(directory / "diagnostics.parquet")
         meta = {"window_length": self.config.window_length, "holding": self.config.holding}
         (directory / "run.json").write_text(json.dumps(meta, indent=2))
 
@@ -206,6 +270,7 @@ class BacktestResult:
             daily_returns=daily,
             weights=pd.read_parquet(directory / "weights.parquet"),
             period_of_day=pd.read_parquet(directory / "period_of_day.parquet")["k"],
+            diagnostics=pd.read_parquet(directory / "diagnostics.parquet"),
         )
 
 
@@ -238,10 +303,13 @@ def run_backtest(
     rows: list[dict[str, object]] = []
     daily_cols: dict[tuple[str, str], list[pd.Series]] = {}
     weight_rows: dict[tuple[str, str, int], pd.Series] = {}
+    diag_rows: dict[tuple[str, int], dict[str, float]] = {}
 
     for est_name in config.estimators:
         logger.info("Running estimator %s (window %d)", est_name, config.window_length)
-        covs = fit_covariances(returns, schedule, config, est_name, cache_dir)
+        covs, diags = fit_covariances(returns, schedule, config, est_name, cache_dir)
+        for k, d in diags.items():
+            diag_rows[(est_name, k)] = d
         for p in schedule.periods:
             cov = covs[p.k]
             assets = list(cov.columns)
@@ -282,8 +350,11 @@ def run_backtest(
         index=returns.index[schedule.periods[0].start_pos : schedule.periods[-1].end_pos + 1],
         name="k",
     )
+    diagnostics = pd.DataFrame.from_dict(diag_rows, orient="index")
+    diagnostics.index = pd.MultiIndex.from_tuples(list(diag_rows), names=["estimator", "k"])
     return BacktestResult(
         config=config,
+        diagnostics=diagnostics,
         forecasts=forecasts,
         daily_returns=daily_returns,
         weights=weights,
@@ -293,8 +364,10 @@ def run_backtest(
 
 __all__ = [
     "FORECAST_COLUMNS",
+    "CACHE_VERSION",
     "BacktestResult",
     "data_fingerprint",
+    "estimator_diagnostics",
     "fit_covariances",
     "run_asset_set",
     "run_backtest",
