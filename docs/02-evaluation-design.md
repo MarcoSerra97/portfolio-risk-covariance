@@ -2,7 +2,7 @@
 
 **Project:** portfolio-risk-covariance
 **Scope:** `src/portfolio_risk/evaluation/` — backtest engine and Criteria A, B, C
-**Status:** Draft v1.8
+**Status:** Draft v1.9
 **Author:** Marco Serra
 **Last updated:** 2026-10-05
 
@@ -158,6 +158,7 @@ src/portfolio_risk/evaluation/
 ├── bootstrap.py    ← stationary block bootstrap (paired)
 ├── regimes.py      ← Criterion C tables, paired comparisons, block sensitivity, rank stability
 ├── report.py       ← every table for one run, settings read from the run's configuration
+├── figures.py      ← result figures from saved results: python -m portfolio_risk.evaluation.figures --window 252
 └── run.py          ← command line: python -m portfolio_risk.evaluation.run --window 252
 ```
 
@@ -165,7 +166,7 @@ src/portfolio_risk/evaluation/
 - **Diagnostics recorded per fit:** condition number and extreme eigenvalues of the covariance and of the implied correlation matrix; Ledoit–Wolf shrinkage intensity; MP number of signal eigenvalues and edge; QIS smallest sample and shrunk eigenvalues; cDCC (a, b), convergence, mean GARCH persistence and number of fallbacks (§11).
 - **Determinism:** no randomness in the backtest itself; seeds only in the bootstrap and the stress-test subsets.
 - **Runtime (estimate):** static estimators take milliseconds per fit. DCC takes about 2 seconds per fit; it does not depend on the window length, so about 131 refits ≈ 5 minutes once. Portfolio construction is under 35 ms per call. A full run, both window lengths, is a few minutes plus the bootstrap.
-- **Outputs:** backtest results to `data/results/w<window>/` (git-ignored); tables as CSV to `memo/tables/w<window>/`; figures to `memo/figures/`.
+- **Outputs:** backtest results to `data/results/w<window>/` (git-ignored); tables as CSV to `memo/tables/w<window>/`; figures as PNG to `memo/figures/w<window>/`. Figures read only saved results, so they are regenerated in seconds after any change.
 
 ## 13. Actions before implementation
 
@@ -186,3 +187,4 @@ src/portfolio_risk/evaluation/
 - **v1.6 (2026-10-07):** Criterion B mean block length set to 63 days (from 21), matching Criterion A's three-month span; sensitivity range 21 and 126 days.
 - **v1.7 (2026-10-07):** calibration: the log-log Mincer–Zarnowitz slope is the tracking measure for every portfolio (the levels regression is confounded by the optimism of optimised portfolios); levels regression moved to an appendix.
 - **v1.8 (2026-10-07):** per-fit diagnostics recorded in the backtest and cache (cache-format version added to the key); `report.py` and `run.py` added; output locations specified.
+- **v1.9 (2026-10-08):** `figures.py` added (first batch: interval plots; forecast vs realised volatility for equal weight, and for each optimised portfolio against each estimator's own realised risk; cumulative QLIKE; QLIKE by regime; composition; risk-parity mechanism; DCC panel).
