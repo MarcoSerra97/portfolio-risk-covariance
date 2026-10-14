@@ -224,7 +224,7 @@ Produced by `notebooks/01_data_diagnostics.ipynb` and saved to `memo/figures/` a
 4. **Full-sample correlation heatmap** (`correlation_full.png`): 75×75 Pearson correlation of log-returns, ordered by bucket, with bucket labels on the diagonal blocks.
 5. **Rolling median pairwise correlation** (`correlation_rolling.png`): median off-diagonal pairwise correlation on a 63-day rolling window.
 
-The committed figures and tables were computed on data ending 2024-12-31 and will be regenerated on the 2010–2025 window together with the results notebooks.
+
 
 
 ## 8. Known limitations
