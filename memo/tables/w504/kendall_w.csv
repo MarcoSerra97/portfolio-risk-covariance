@@ -1,0 +1,8 @@
+,criterion,portfolio,kendall_w
+0,A_qlike,equal_weight,0.47023809523809523
+1,A_qlike,risk_parity,0.49603174603174605
+2,A_qlike,min_variance_long_only,0.13293650793650794
+3,A_qlike,min_variance_long_short,0.14285714285714285
+4,B_volatility,risk_parity,0.7619047619047619
+5,B_volatility,min_variance_long_only,0.6984126984126984
+6,B_volatility,min_variance_long_short,0.5476190476190477
